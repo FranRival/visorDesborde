@@ -1,0 +1,25 @@
+# Carpetas de compilación y salida de .NET
+bin/
+obj/
+out/
+
+# Archivos de usuario / configuración local de IDEs (Visual Studio, VS Code, Rider)
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# Logs y archivos temporales
+*.log
+*.tmp
+*.bak
+
+# Archivos de Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
