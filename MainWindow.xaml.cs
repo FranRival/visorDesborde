@@ -1,312 +1,127 @@
-﻿using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.IO;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Media.Imaging;
-using System.Windows.Threading;
-using Microsoft.Win32;
+<Window x:Class="VisorDesborde.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Visor y Desborde de Imágenes (Límite 60)"
+        Height="720" Width="1180"
+        Background="#14171D" Foreground="#E6EDF3">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
-namespace VisorDesborde;
+        <!-- Barra superior + Medidor de RAM en esquina superior derecha -->
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
 
-public partial class MainWindow : Window
-{
-    private const int LimitePorCarpeta = 60;
-    private static readonly HashSet<string> ExtensionesImagen = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"
-    };
+            <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+                <Button x:Name="BtnSeleccionar" Content="1. Carpeta Madre"
+                        Padding="12,6" Margin="0,0,8,4" Click="BtnSeleccionar_Click"/>
+                <Button x:Name="BtnEscanear" Content="2. Escanear (>60)"
+                        Padding="12,6" Margin="0,0,8,4" Click="BtnEscanear_Click" IsEnabled="False"/>
+                <Button x:Name="BtnSimular" Content="3. Simular Desborde"
+                        Padding="12,6" Margin="0,0,8,4" Click="BtnSimular_Click" IsEnabled="False"/>
+                <Button x:Name="BtnAplicar" Content="4. Aplicar Desborde"
+                        Padding="12,6" Margin="0,0,8,4" Click="BtnAplicar_Click" IsEnabled="False"/>
+                <CheckBox x:Name="ChkCopiarEnVezDeMover" Content="Copiar (más seguro)"
+                          Foreground="#C9D1D9" VerticalAlignment="Center" Margin="6,0,0,4" IsChecked="True"/>
+            </WrapPanel>
 
-    private string? _carpetaMadre;
-    private readonly DispatcherTimer _ramTimer;
-    private readonly ObservableCollection<CarpetaOverflowInfo> _carpetasConDesborde = [];
-    private readonly ObservableCollection<ImagenPreviewItem> _imagenesActuales = [];
-    private List<PlanDesborde> _ultimoPlan = [];
+            <!-- HUD de RAM anclado arriba a la derecha -->
+            <Border Grid.Column="1"
+                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Background="#1F242D" BorderBrush="#30363D" BorderThickness="1"
+                    CornerRadius="6" Padding="10,6">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="RAM Proceso: " Foreground="#8B949E" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="TxtRamProceso" Text="0 MB" Foreground="#58A6FF" FontWeight="Bold" Margin="0,0,12,0"/>
+                    <TextBlock Text="GC: " Foreground="#8B949E" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="TxtRamGc" Text="0 MB" Foreground="#79C0FF" FontWeight="Bold"/>
+                </StackPanel>
+            </Border>
+        </Grid>
 
-    public MainWindow()
-    {
-        InitializeComponent();
-        LstCarpetasDesborde.ItemsSource = _carpetasConDesborde;
-        ItemsImagenes.ItemsSource = _imagenesActuales;
+        <!-- Cuerpo principal: carpetas con desborde a la izquierda, visor de lote a la derecha -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
-        // Timer cada 500 ms para medir RAM sin saturar el hilo de UI
-        _ramTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _ramTimer.Tick += (_, _) => ActualizarRam();
-        _ramTimer.Start();
-        ActualizarRam();
-    }
+            <GroupBox Grid.Column="0" Header="Carpetas con más de 60 imágenes" Foreground="#E6EDF3" BorderBrush="#30363D">
+                <!-- HorizontalContentAlignment=Stretch: el Grid del item ocupa todo el ancho
+                     y el TextBlock puede recortar con elipsis en vez de ensanchar la lista -->
+                <ListBox x:Name="LstCarpetasDesborde"
+                         Background="#0D1117" Foreground="#E6EDF3" BorderThickness="0"
+                         HorizontalContentAlignment="Stretch"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         SelectionChanged="LstCarpetasDesborde_SelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
 
-    private void ActualizarRam()
-    {
-        using var proc = Process.GetCurrentProcess();
-        double workingSetMb = proc.WorkingSet64 / (1024.0 * 1024.0);
-        double gcMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+                                <!-- X: quita la carpeta de la lista (NO toca el disco).
+                                     Tag recibe el CarpetaOverflowInfo del item para el handler. -->
+                                <Button Grid.Column="0" Content="X" Tag="{Binding}"
+                                        Click="BtnQuitar_Click"
+                                        Width="22" Height="22" Padding="0" Margin="0,0,8,0"
+                                        VerticalAlignment="Center" FontWeight="Bold"
+                                        Foreground="#F85149" Background="#21262D" BorderBrush="#30363D"
+                                        ToolTip="Quitar de la lista (no borra nada del disco)"/>
 
-        TxtRamProceso.Text = $"{workingSetMb:F1} MB";
-        TxtRamGc.Text = $"{gcMb:F1} MB";
-    }
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding RelativePath}" FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" ToolTip="{Binding FullPath}"/>
+                                    <TextBlock Text="{Binding Resumen}" Foreground="#8B949E" FontSize="11"/>
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </GroupBox>
 
-    private void BtnSeleccionar_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "Selecciona la carpeta madre"
-        };
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" Background="#30363D"/>
 
-        if (dialog.ShowDialog() == true)
-        {
-            _carpetaMadre = dialog.FolderName;
-            TxtEstado.Text = $"Carpeta madre: {_carpetaMadre}";
-            BtnEscanear.IsEnabled = true;
-            BtnSimular.IsEnabled = false;
-            BtnAplicar.IsEnabled = false;
-            _ultimoPlan.Clear();
-            LimpiarVisor();
-            _carpetasConDesborde.Clear();
-        }
-    }
+            <GroupBox Grid.Column="2" Header="Vista previa de la carpeta seleccionada (máx. 60 imágenes)" Foreground="#E6EDF3" BorderBrush="#30363D">
+                <ScrollViewer x:Name="ScrollImagenes" VerticalScrollBarVisibility="Auto" Background="#0D1117">
+                    <ItemsControl x:Name="ItemsImagenes">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Width="150" Height="150" Margin="6" Background="#161B22" BorderBrush="#30363D" BorderThickness="1" Padding="4">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Image Grid.Row="0" Source="{Binding Thumbnail}" Stretch="Uniform"/>
+                                        <TextBlock Grid.Row="1" Text="{Binding FileName}" Foreground="#8B949E" FontSize="10"
+                                                   TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </GroupBox>
+        </Grid>
 
-    private async void BtnEscanear_Click(object sender, RoutedEventArgs e)
-    {
-        if (string.IsNullOrWhiteSpace(_carpetaMadre) || !Directory.Exists(_carpetaMadre))
-            return;
-
-        SetBotonesHabilitados(false);
-        LimpiarVisor();
-        _carpetasConDesborde.Clear();
-        TxtEstado.Text = "Escaneando carpetas e imágenes...";
-
-        string raiz = _carpetaMadre;
-
-        var resultados = await Task.Run(() =>
-        {
-            var encontrados = new List<CarpetaOverflowInfo>();
-
-            // EnumerateDirectories evita cargar todas las rutas de golpe en un array gigante
-            var opcionesDir = new EnumerationOptions
-            {
-                RecurseSubdirectories = true,
-                IgnoreInaccessible = true,
-                AttributesToSkip = FileAttributes.ReparsePoint
-            };
-
-            var opcionesFile = new EnumerationOptions
-            {
-                RecurseSubdirectories = false,
-                IgnoreInaccessible = true
-            };
-
-            foreach (string dir in Directory.EnumerateDirectories(raiz, "*", opcionesDir))
-            {
-                // Ignoramos carpetas ya numeradas si son hijas directas de un desborde previo (opcional)
-                var imagenes = Directory.EnumerateFiles(dir, "*.*", opcionesFile)
-                    .Where(f => ExtensionesImagen.Contains(Path.GetExtension(f)))
-                    .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                if (imagenes.Count > LimitePorCarpeta)
-                {
-                    int subcarpetasNecesarias = (int)Math.Ceiling(imagenes.Count / (double)LimitePorCarpeta);
-                    encontrados.Add(new CarpetaOverflowInfo
-                    {
-                        FullPath = dir,
-                        RelativePath = Path.GetRelativePath(raiz, dir),
-                        TotalImagenes = imagenes.Count,
-                        SubcarpetasNecesarias = subcarpetasNecesarias,
-                        Archivos = imagenes
-                    });
-                }
-            }
-
-            return encontrados.OrderBy(x => x.RelativePath, StringComparer.OrdinalIgnoreCase).ToList();
-        });
-
-        foreach (var item in resultados)
-            _carpetasConDesborde.Add(item);
-
-        TxtEstado.Text = $"Escaneo completo. Carpetas con >{LimitePorCarpeta} imágenes: {_carpetasConDesborde.Count}";
-        SetBotonesHabilitados(true);
-        BtnSimular.IsEnabled = _carpetasConDesborde.Count > 0;
-    }
-
-    private async void BtnSimular_Click(object sender, RoutedEventArgs e)
-    {
-        if (_carpetasConDesborde.Count == 0) return;
-
-        SetBotonesHabilitados(false);
-        TxtEstado.Text = "Calculando plan de desborde (simulación)...";
-
-        _ultimoPlan = await Task.Run(() => ConstruirPlanDesborde(_carpetasConDesborde));
-
-        int totalSubcarpetas = _ultimoPlan.Sum(p => p.Subcarpetas.Count);
-        int totalArchivos = _ultimoPlan.Sum(p => p.Subcarpetas.Sum(s => s.Archivos.Count));
-
-        TxtEstado.Text = $"Simulación: se crearían {totalSubcarpetas} subcarpetas (1, 2, 3...) para {totalArchivos} imágenes.";
-        SetBotonesHabilitados(true);
-        BtnAplicar.IsEnabled = _ultimoPlan.Count > 0;
-    }
-
-    private async void BtnAplicar_Click(object sender, RoutedEventArgs e)
-    {
-        if (_ultimoPlan.Count == 0) return;
-
-        bool copiar = ChkCopiarEnVezDeMover.IsChecked == true;
-        string accion = copiar ? "copiar" : "mover";
-
-        var confirm = MessageBox.Show(
-            $"Se van a {accion} las imágenes a subcarpetas numeradas (1, 2, 3...) dentro de cada carpeta con más de {LimitePorCarpeta} imágenes.\n\n¿Continuar?",
-            "Confirmar desborde",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-
-        if (confirm != MessageBoxResult.Yes) return;
-
-        SetBotonesHabilitados(false);
-        LimpiarVisor();
-        TxtEstado.Text = $"Ejecutando desborde ({accion})...";
-
-        var planActual = _ultimoPlan;
-
-        await Task.Run(() =>
-        {
-            foreach (var carpeta in planActual)
-            {
-                foreach (var lote in carpeta.Subcarpetas)
-                {
-                    string destinoDir = Path.Combine(carpeta.CarpetaOrigen, lote.Indice.ToString());
-                    Directory.CreateDirectory(destinoDir);
-
-                    foreach (string origenArchivo in lote.Archivos)
-                    {
-                        string nombreArchivo = Path.GetFileName(origenArchivo);
-                        string destinoArchivo = Path.Combine(destinoDir, nombreArchivo);
-
-                        if (copiar)
-                        {
-                            File.Copy(origenArchivo, destinoArchivo, overwrite: false);
-                        }
-                        else
-                        {
-                            if (!string.Equals(origenArchivo, destinoArchivo, StringComparison.OrdinalIgnoreCase))
-                                File.Move(origenArchivo, destinoArchivo, overwrite: false);
-                        }
-                    }
-                }
-            }
-        });
-
-        _ultimoPlan.Clear();
-        BtnAplicar.IsEnabled = false;
-        TxtEstado.Text = "Desborde finalizado. Puedes volver a escanear para verificar.";
-        SetBotonesHabilitados(true);
-    }
-
-    private static List<PlanDesborde> ConstruirPlanDesborde(IEnumerable<CarpetaOverflowInfo> carpetas)
-    {
-        var planes = new List<PlanDesborde>();
-
-        foreach (var carpeta in carpetas)
-        {
-            var subcarpetas = new List<LoteSubcarpeta>();
-            int indice = 1;
-
-            for (int i = 0; i < carpeta.Archivos.Count; i += LimitePorCarpeta)
-            {
-                var chunk = carpeta.Archivos.Skip(i).Take(LimitePorCarpeta).ToList();
-                subcarpetas.Add(new LoteSubcarpeta
-                {
-                    Indice = indice++,
-                    Archivos = chunk
-                });
-            }
-
-            planes.Add(new PlanDesborde
-            {
-                CarpetaOrigen = carpeta.FullPath,
-                Subcarpetas = subcarpetas
-            });
-        }
-
-        return planes;
-    }
-
-    private async void LstCarpetasDesborde_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (LstCarpetasDesborde.SelectedItem is not CarpetaOverflowInfo seleccionada)
-            return;
-
-        LimpiarVisor();
-        TxtEstado.Text = $"Cargando vista previa (primeras {LimitePorCarpeta} de {seleccionada.TotalImagenes})...";
-
-        // Solo decodificamos las primeras 60 para mantener la RAM controlada
-        var muestra = seleccionada.Archivos.Take(LimitePorCarpeta).ToList();
-
-        var items = await Task.Run(() =>
-        {
-            var lista = new List<ImagenPreviewItem>(muestra.Count);
-            foreach (string ruta in muestra)
-            {
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.UriSource = new Uri(ruta);
-                bmp.CacheOption = BitmapCacheOption.OnDemand;
-                bmp.DecodePixelWidth = 160; // Evita cargar resoluciones gigantes en RAM
-                bmp.EndInit();
-                bmp.Freeze(); // Permite usar el BitmapImage de forma segura en el UI thread
-
-                lista.Add(new ImagenPreviewItem
-                {
-                    FileName = Path.GetFileName(ruta),
-                    Thumbnail = bmp
-                });
-            }
-            return lista;
-        });
-
-        foreach (var item in items)
-            _imagenesActuales.Add(item);
-
-        TxtEstado.Text = $"{seleccionada.RelativePath} — {seleccionada.TotalImagenes} imágenes ({seleccionada.SubcarpetasNecesarias} subcarpetas 1..{seleccionada.SubcarpetasNecesarias})";
-    }
-
-    private void LimpiarVisor()
-    {
-        _imagenesActuales.Clear();
-    }
-
-    private void SetBotonesHabilitados(bool habilitado)
-    {
-        BtnSeleccionar.IsEnabled = habilitado;
-        BtnEscanear.IsEnabled = habilitado && !string.IsNullOrWhiteSpace(_carpetaMadre);
-        BtnSimular.IsEnabled = habilitado && _carpetasConDesborde.Count > 0;
-        BtnAplicar.IsEnabled = habilitado && _ultimoPlan.Count > 0;
-    }
-
-    public sealed class CarpetaOverflowInfo
-    {
-        public string FullPath { get; init; } = string.Empty;
-        public string RelativePath { get; init; } = string.Empty;
-        public int TotalImagenes { get; init; }
-        public int SubcarpetasNecesarias { get; init; }
-        public List<string> Archivos { get; init; } = [];
-        public string Resumen => $"{TotalImagenes} imgs → {SubcarpetasNecesarias} carpetas (1..{SubcarpetasNecesarias})";
-    }
-
-    public sealed class ImagenPreviewItem
-    {
-        public string FileName { get; init; } = string.Empty;
-        public BitmapImage? Thumbnail { get; init; }
-    }
-
-    private sealed class PlanDesborde
-    {
-        public string CarpetaOrigen { get; init; } = string.Empty;
-        public List<LoteSubcarpeta> Subcarpetas { get; init; } = [];
-    }
-
-    private sealed class LoteSubcarpeta
-    {
-        public int Indice { get; init; }
-        public List<string> Archivos { get; init; } = [];
-    }
-}
+        <!-- Barra de estado / log inferior -->
+        <Border Grid.Row="2" Margin="0,10,0,0" Background="#1F242D" BorderBrush="#30363D" BorderThickness="1" CornerRadius="4" Padding="8,5">
+            <TextBlock x:Name="TxtEstado" Text="Listo. Selecciona una carpeta madre." TextTrimming="CharacterEllipsis"/>
+        </Border>
+    </Grid>
+</Window>
